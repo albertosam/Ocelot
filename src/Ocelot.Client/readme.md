@@ -26,3 +26,60 @@ For generate the re-routes try
 
 http://localhost:54607/api/ocelot/generator/http/myadress.com/80?prefixAppName=myapp
 
+The result response is
+```
+{
+  "ReRoutes": [
+    {
+      "DownstreamPathTemplate": "/myapp/api/Test",
+      "UpstreamPathTemplate": "/myapp/api/Test",
+      "UpstreamHttpMethod": [
+        "GET",
+        "POST"
+      ],
+      "ReRouteIsCaseSensitive": false,
+      "DownstreamScheme": "http",
+      "DownstreamHost": "myadress.com",
+      "DownstreamPort": 80
+    },
+    {
+      "DownstreamPathTemplate": "/myapp/api/Test/{id}",
+      "UpstreamPathTemplate": "/myapp/api/Test/{id}",
+      "UpstreamHttpMethod": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ],
+      "ReRouteIsCaseSensitive": false,
+      "DownstreamScheme": "http",
+      "DownstreamHost": "myadress.com",
+      "DownstreamPort": 80
+    },
+    {
+      "DownstreamPathTemplate": "/myapp/api/Values",
+      "UpstreamPathTemplate": "/myapp/api/Values",
+      "UpstreamHttpMethod": [
+        "GET",
+        "POST"
+      ],
+      "ReRouteIsCaseSensitive": false,
+      "DownstreamScheme": "http",
+      "DownstreamHost": "myadress.com",
+      "DownstreamPort": 80
+    },
+    {
+      "DownstreamPathTemplate": "/myapp/api/Values/{id}",
+      "UpstreamPathTemplate": "/myapp/api/Values/{id}",
+      "UpstreamHttpMethod": [
+        "GET",
+        "PUT",
+        "DELETE"
+      ],
+      "ReRouteIsCaseSensitive": false,
+      "DownstreamScheme": "http",
+      "DownstreamHost": "myadress.com",
+      "DownstreamPort": 80
+    }
+  ]
+}
+```
