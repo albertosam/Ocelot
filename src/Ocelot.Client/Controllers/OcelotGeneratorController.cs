@@ -35,7 +35,7 @@ namespace Ocelot.Client.Controllers
         /// Get reroutes for Ocelot format
         /// 
         /// <example>
-        ///     {downstreamScheme}://{downstreamHost}:{downstreamPort}/{baseTemplatePath}/controller/action
+        ///     {downstreamScheme}://{downstreamHost}:{downstreamPort}/{prefixAppName}/controller/action
         /// </example>
         /// </summary>
         /// <param name="downstreamScheme">Protocolo (Ex: http, https)</param>
