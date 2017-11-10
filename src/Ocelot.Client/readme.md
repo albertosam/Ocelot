@@ -18,7 +18,7 @@ public void ConfigureServices(IServiceCollection services)
 
 ## How to Test
 
-Run the project test Ocelot.Client.ManualTest and navigate navigate to
+Run the project test Ocelot.Client.ManualTest and navigate to
 
 http://localhost:54607/api/ocelot/generator
 
