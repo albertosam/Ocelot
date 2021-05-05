@@ -1,64 +1,72 @@
-﻿using System;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
-using Ocelot.Infrastructure.RequestData;
-using Ocelot.LoadBalancer.LoadBalancers;
-using Ocelot.Logging;
-using Ocelot.Middleware;
-using Ocelot.QueryStrings.Middleware;
-
-namespace Ocelot.LoadBalancer.Middleware
+﻿namespace Ocelot.LoadBalancer.Middleware
 {
+    using Microsoft.AspNetCore.Http;
+    using Ocelot.DownstreamRouteFinder.Middleware;
+    using Ocelot.LoadBalancer.LoadBalancers;
+    using Ocelot.Logging;
+    using Ocelot.Middleware;
+    using System;
+    using System.Threading.Tasks;
+
     public class LoadBalancingMiddleware : OcelotMiddleware
     {
         private readonly RequestDelegate _next;
-        private readonly IOcelotLogger _logger;
         private readonly ILoadBalancerHouse _loadBalancerHouse;
 
         public LoadBalancingMiddleware(RequestDelegate next,
             IOcelotLoggerFactory loggerFactory,
-            IRequestScopedDataRepository requestScopedDataRepository,
-            ILoadBalancerHouse loadBalancerHouse) 
-            : base(requestScopedDataRepository)
+            ILoadBalancerHouse loadBalancerHouse)
+                : base(loggerFactory.CreateLogger<LoadBalancingMiddleware>())
         {
             _next = next;
-            _logger = loggerFactory.CreateLogger<QueryStringBuilderMiddleware>();
             _loadBalancerHouse = loadBalancerHouse;
         }
 
-        public async Task Invoke(HttpContext context)
+        public async Task Invoke(HttpContext httpContext)
         {
-            var loadBalancer = _loadBalancerHouse.Get(DownstreamRoute.ReRoute.ReRouteKey);
-            if(loadBalancer.IsError)
+            var downstreamRoute = httpContext.Items.DownstreamRoute();
+
+            var internalConfiguration = httpContext.Items.IInternalConfiguration();
+
+            var loadBalancer = _loadBalancerHouse.Get(downstreamRoute, internalConfiguration.ServiceProviderConfiguration);
+
+            if (loadBalancer.IsError)
             {
-                _logger.LogDebug("there was an error retriving the loadbalancer, setting pipeline error");
-                SetPipelineError(loadBalancer.Errors);
+                Logger.LogDebug("there was an error retriving the loadbalancer, setting pipeline error");
+                httpContext.Items.UpsertErrors(loadBalancer.Errors);
                 return;
             }
 
-            var hostAndPort = await loadBalancer.Data.Lease();
-            if(hostAndPort.IsError)
+            var hostAndPort = await loadBalancer.Data.Lease(httpContext);
+            if (hostAndPort.IsError)
             {
-                _logger.LogDebug("there was an error leasing the loadbalancer, setting pipeline error");
-                SetPipelineError(hostAndPort.Errors);
+                Logger.LogDebug("there was an error leasing the loadbalancer, setting pipeline error");
+                httpContext.Items.UpsertErrors(hostAndPort.Errors);
                 return;
             }
 
-            var uriBuilder = new UriBuilder(DownstreamRequest.RequestUri);
-            uriBuilder.Host = hostAndPort.Data.DownstreamHost;
+            var downstreamRequest = httpContext.Items.DownstreamRequest();
+
+            //todo check downstreamRequest is ok
+            downstreamRequest.Host = hostAndPort.Data.DownstreamHost;
+
             if (hostAndPort.Data.DownstreamPort > 0)
             {
-                uriBuilder.Port = hostAndPort.Data.DownstreamPort;
+                downstreamRequest.Port = hostAndPort.Data.DownstreamPort;
             }
-            DownstreamRequest.RequestUri = uriBuilder.Uri;
+
+            if (!string.IsNullOrEmpty(hostAndPort.Data.Scheme))
+            {
+                downstreamRequest.Scheme = hostAndPort.Data.Scheme;
+            }
 
             try
             {
-                await _next.Invoke(context);
+                await _next.Invoke(httpContext);
             }
             catch (Exception)
             {
-                _logger.LogDebug("Exception calling next middleware, exception will be thrown to global handler");
+                Logger.LogDebug("Exception calling next middleware, exception will be thrown to global handler");
                 throw;
             }
             finally

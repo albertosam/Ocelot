@@ -1,45 +1,57 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net;
-using System.Text;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Newtonsoft.Json;
-using Ocelot.Configuration;
-using Ocelot.Configuration.File;
-using Ocelot.ServiceDiscovery;
-using TestStack.BDDfy;
-using Xunit;
-
 namespace Ocelot.AcceptanceTests
 {
-    public class ConfigurationInConsul : IDisposable
-    {
-        private IWebHost _builder;
-        private readonly Steps _steps;
-        private IWebHost _fakeConsulBuilder;
-        private IOcelotConfiguration _config;
+    using Configuration.File;
+    using Consul;
+    using IdentityServer4.Extensions;
+    using Microsoft.AspNetCore.Builder;
+    using Microsoft.AspNetCore.Hosting;
+    using Microsoft.AspNetCore.Http;
+    using Microsoft.Extensions.Hosting;
+    using Newtonsoft.Json;
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Net;
+    using System.Text;
+    using TestStack.BDDfy;
+    using Xunit;
 
-        public ConfigurationInConsul()
+    public class ConfigurationInConsulTests : IDisposable
+    {
+        private IHost _builder;
+        private readonly Steps _steps;
+        private IHost _fakeConsulBuilder;
+        private FileConfiguration _config;
+        private readonly List<ServiceEntry> _consulServices;
+
+        public ConfigurationInConsulTests()
         {
+            _consulServices = new List<ServiceEntry>();
             _steps = new Steps();
         }
 
         [Fact]
-        public void should_return_response_200_with_simple_url()
+        public void should_return_response_200_with_simple_url_when_using_jsonserialized_cache()
         {
+            int consulPort = RandomPortFinder.GetRandomPort();
+            int servicePort = RandomPortFinder.GetRandomPort();
+
             var configuration = new FileConfiguration
             {
-                ReRoutes = new List<FileReRoute>
+                Routes = new List<FileRoute>
                     {
-                        new FileReRoute
+                        new FileRoute
                         {
                             DownstreamPathTemplate = "/",
                             DownstreamScheme = "http",
-                            DownstreamHost = "localhost",
-                            DownstreamPort = 51779,
+                            DownstreamHostAndPorts = new List<FileHostAndPort>
+                            {
+                                new FileHostAndPort
+                                {
+                                    Host = "localhost",
+                                    Port = servicePort,
+                                }
+                            },
                             UpstreamPathTemplate = "/",
                             UpstreamHttpMethod = new List<string> { "Get" },
                         }
@@ -48,31 +60,31 @@ namespace Ocelot.AcceptanceTests
                 {
                     ServiceDiscoveryProvider = new FileServiceDiscoveryProvider()
                     {
-                        Provider = "Consul",
+                        Scheme = "http",
                         Host = "localhost",
-                        Port = 9500
+                        Port = consulPort
                     }
                 }
             };
 
-            var fakeConsulServiceDiscoveryUrl = "http://localhost:9500";
+            var fakeConsulServiceDiscoveryUrl = $"http://localhost:{consulPort}";
 
-            var consulConfig = new ConsulRegistryConfiguration("localhost", 9500, "Ocelot");
-
-            this.Given(x => GivenThereIsAFakeConsulServiceDiscoveryProvider(fakeConsulServiceDiscoveryUrl))
-                .And(x => x.GivenThereIsAServiceRunningOn("http://localhost:51779", 200, "Hello from Laura"))
+            this.Given(x => GivenThereIsAFakeConsulServiceDiscoveryProvider(fakeConsulServiceDiscoveryUrl, ""))
+                .And(x => x.GivenThereIsAServiceRunningOn($"http://localhost:{servicePort}", "", 200, "Hello from Laura"))
                 .And(x => _steps.GivenThereIsAConfiguration(configuration))
-                .And(x => _steps.GivenOcelotIsRunningUsingConsulToStoreConfig(consulConfig))
+                .And(x => _steps.GivenOcelotIsRunningUsingConsulToStoreConfigAndJsonSerializedCache())
                 .When(x => _steps.WhenIGetUrlOnTheApiGateway("/"))
                 .Then(x => _steps.ThenTheStatusCodeShouldBe(HttpStatusCode.OK))
                 .And(x => _steps.ThenTheResponseBodyShouldBe("Hello from Laura"))
                 .BDDfy();
         }
 
-        private void GivenThereIsAFakeConsulServiceDiscoveryProvider(string url)
+        private void GivenThereIsAFakeConsulServiceDiscoveryProvider(string url, string serviceName)
         {
-            _fakeConsulBuilder = new WebHostBuilder()
-                            .UseUrls(url)
+            _fakeConsulBuilder = Host.CreateDefaultBuilder()
+                .ConfigureWebHost(webBuilder =>
+                {
+                    webBuilder.UseUrls(url)
                             .UseKestrel()
                             .UseContentRoot(Directory.GetCurrentDirectory())
                             .UseIISIntegration()
@@ -81,7 +93,7 @@ namespace Ocelot.AcceptanceTests
                             {
                                 app.Run(async context =>
                                 {
-                                    if (context.Request.Method.ToLower() == "get" && context.Request.Path.Value == "/v1/kv/OcelotConfiguration")
+                                    if (context.Request.Method.ToLower() == "get" && context.Request.Path.Value == "/v1/kv/InternalConfiguration")
                                     {
                                         var json = JsonConvert.SerializeObject(_config);
 
@@ -91,18 +103,19 @@ namespace Ocelot.AcceptanceTests
 
                                         var kvp = new FakeConsulGetResponse(base64);
 
-                                        await context.Response.WriteJsonAsync(new FakeConsulGetResponse[]{kvp});
+                                        await context.Response.WriteJsonAsync(new FakeConsulGetResponse[] { kvp });
                                     }
-
-                                    else if (context.Request.Method.ToLower() == "put" && context.Request.Path.Value == "/v1/kv/OcelotConfiguration")
+                                    else if (context.Request.Method.ToLower() == "put" && context.Request.Path.Value == "/v1/kv/InternalConfiguration")
                                     {
                                         try
                                         {
                                             var reader = new StreamReader(context.Request.Body);
 
-                                            var json = reader.ReadToEnd();
+                                            // Synchronous operations are disallowed. Call ReadAsync or set AllowSynchronousIO to true instead.
+                                            // var json = reader.ReadToEnd();                                            
+                                            var json = await reader.ReadToEndAsync();
 
-                                            _config = JsonConvert.DeserializeObject<OcelotConfiguration>(json);
+                                            _config = JsonConvert.DeserializeObject<FileConfiguration>(json);
 
                                             var response = JsonConvert.SerializeObject(true);
 
@@ -114,9 +127,13 @@ namespace Ocelot.AcceptanceTests
                                             throw;
                                         }
                                     }
+                                    else if (context.Request.Path.Value == $"/v1/health/service/{serviceName}")
+                                    {
+                                        await context.Response.WriteJsonAsync(_consulServices);
+                                    }
                                 });
-                            })
-                            .Build();
+                            });
+                }).Build();
 
             _fakeConsulBuilder.Start();
         }
@@ -131,26 +148,30 @@ namespace Ocelot.AcceptanceTests
             public int CreateIndex => 100;
             public int ModifyIndex => 200;
             public int LockIndex => 200;
-            public string Key => "OcelotConfiguration";
+            public string Key => "InternalConfiguration";
             public int Flags => 0;
             public string Value { get; private set; }
             public string Session => "adf4238a-882b-9ddc-4a9d-5b6758e4159e";
         }
 
-        private void GivenThereIsAServiceRunningOn(string url, int statusCode, string responseBody)
+        private void GivenThereIsAServiceRunningOn(string url, string basePath, int statusCode, string responseBody)
         {
-            _builder = new WebHostBuilder()
-                .UseUrls(url)
-                .UseKestrel()
-                .UseContentRoot(Directory.GetCurrentDirectory())
-                .UseIISIntegration()
-                .UseUrls(url)
-                .Configure(app =>
+            _builder = Host.CreateDefaultBuilder()
+                .ConfigureWebHost(webBuilder =>
                 {
-                    app.Run(async context =>
+                    webBuilder.UseUrls(url)
+                    .UseKestrel()
+                    .UseContentRoot(Directory.GetCurrentDirectory())
+                    .UseIISIntegration()
+                    .UseUrls(url)
+                    .Configure(app =>
                     {
-                        context.Response.StatusCode = statusCode;
-                        await context.Response.WriteAsync(responseBody);
+                        app.UsePathBase(basePath);
+                        app.Run(async context =>
+                        {
+                            context.Response.StatusCode = statusCode;
+                            await context.Response.WriteAsync(responseBody);
+                        });
                     });
                 })
                 .Build();

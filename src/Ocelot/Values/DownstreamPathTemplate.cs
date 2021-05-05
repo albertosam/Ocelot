@@ -1,12 +1,12 @@
 ﻿namespace Ocelot.Values
 {
-    public class PathTemplate
+    public class DownstreamPathTemplate
     {
-        public PathTemplate(string value)
+        public DownstreamPathTemplate(string value)
         {
             Value = value;
         }
 
-        public string Value { get; private set; }
+        public string Value { get; }
     }
 }

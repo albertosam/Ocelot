@@ -1,75 +1,129 @@
-﻿using System;
-using System.Linq;
-using System.Net.Http;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
-using Ocelot.Infrastructure.RequestData;
-using Ocelot.Logging;
-using Ocelot.Middleware;
-
-namespace Ocelot.Cache.Middleware
+﻿namespace Ocelot.Cache.Middleware
 {
+    using Ocelot.Logging;
+    using Ocelot.Middleware;
+    using System;
+    using System.IO;
+    using System.Linq;
+    using System.Net.Http;
+    using System.Threading.Tasks;
+    using Microsoft.AspNetCore.Http;
+    using Ocelot.DownstreamRouteFinder.Middleware;
+
     public class OutputCacheMiddleware : OcelotMiddleware
     {
         private readonly RequestDelegate _next;
-        private readonly IOcelotLogger _logger;
-        private readonly IOcelotCache<HttpResponseMessage> _outputCache;
-        private readonly IRegionCreator _regionCreator;
+        private readonly IOcelotCache<CachedResponse> _outputCache;
+        private readonly ICacheKeyGenerator _cacheGenerator;
 
         public OutputCacheMiddleware(RequestDelegate next,
             IOcelotLoggerFactory loggerFactory,
-            IRequestScopedDataRepository scopedDataRepository,
-            IOcelotCache<HttpResponseMessage> outputCache,
-            IRegionCreator regionCreator)
-            :base(scopedDataRepository)
+            IOcelotCache<CachedResponse> outputCache,
+            ICacheKeyGenerator cacheGenerator)
+                : base(loggerFactory.CreateLogger<OutputCacheMiddleware>())
         {
             _next = next;
             _outputCache = outputCache;
-            _logger = loggerFactory.CreateLogger<OutputCacheMiddleware>();
-            _regionCreator = regionCreator;
+            _cacheGenerator = cacheGenerator;
         }
 
-        public async Task Invoke(HttpContext context)
+        public async Task Invoke(HttpContext httpContext)
         {
-            if (!DownstreamRoute.ReRoute.IsCached)
+            var downstreamRoute = httpContext.Items.DownstreamRoute();
+
+            if (!downstreamRoute.IsCached)
             {
-                await _next.Invoke(context);
+                await _next.Invoke(httpContext);
                 return;
             }
 
-            var downstreamUrlKey = $"{DownstreamRequest.Method.Method}-{DownstreamRequest.RequestUri.OriginalString}";
+            var downstreamRequest = httpContext.Items.DownstreamRequest();
 
-            _logger.LogDebug("started checking cache for {downstreamUrlKey}", downstreamUrlKey);
-  
-            var cached = _outputCache.Get(downstreamUrlKey, DownstreamRoute.ReRoute.CacheOptions.Region);
+            var downstreamUrlKey = $"{downstreamRequest.Method}-{downstreamRequest.OriginalString}";
+            string downStreamRequestCacheKey = _cacheGenerator.GenerateRequestCacheKey(downstreamRequest);
+
+            Logger.LogDebug($"Started checking cache for {downstreamUrlKey}");
+
+            var cached = _outputCache.Get(downStreamRequestCacheKey, downstreamRoute.CacheOptions.Region);
 
             if (cached != null)
             {
-                _logger.LogDebug("cache entry exists for {downstreamUrlKey}", downstreamUrlKey);
+                Logger.LogDebug($"cache entry exists for {downstreamUrlKey}");
 
-                SetHttpResponseMessageThisRequest(cached);
+                var response = CreateHttpResponseMessage(cached);
+                SetHttpResponseMessageThisRequest(httpContext, response);
 
-                _logger.LogDebug("finished returned cached response for {downstreamUrlKey}", downstreamUrlKey);
+                Logger.LogDebug($"finished returned cached response for {downstreamUrlKey}");
 
                 return;
             }
 
-            _logger.LogDebug("no resonse cached for {downstreamUrlKey}", downstreamUrlKey);
+            Logger.LogDebug($"no resonse cached for {downstreamUrlKey}");
 
-            await _next.Invoke(context);
+            await _next.Invoke(httpContext);
 
-            if (PipelineError)
+            if (httpContext.Items.Errors().Count > 0)
             {
-                _logger.LogDebug("there was a pipeline error for {downstreamUrlKey}", downstreamUrlKey);
+                Logger.LogDebug($"there was a pipeline error for {downstreamUrlKey}");
 
                 return;
             }
 
-            var response = HttpResponseMessage;
+            var downstreamResponse = httpContext.Items.DownstreamResponse();
 
-            _outputCache.Add(downstreamUrlKey, response, TimeSpan.FromSeconds(DownstreamRoute.ReRoute.CacheOptions.TtlSeconds), DownstreamRoute.ReRoute.CacheOptions.Region);
+            cached = await CreateCachedResponse(downstreamResponse);
 
-            _logger.LogDebug("finished response added to cache for {downstreamUrlKey}", downstreamUrlKey);
+            _outputCache.Add(downStreamRequestCacheKey, cached, TimeSpan.FromSeconds(downstreamRoute.CacheOptions.TtlSeconds), downstreamRoute.CacheOptions.Region);
+
+            Logger.LogDebug($"finished response added to cache for {downstreamUrlKey}");
+        }
+
+        private void SetHttpResponseMessageThisRequest(HttpContext context,
+                                                       DownstreamResponse response)
+        {
+            context.Items.UpsertDownstreamResponse(response);
+        }
+
+        internal DownstreamResponse CreateHttpResponseMessage(CachedResponse cached)
+        {
+            if (cached == null)
+            {
+                return null;
+            }
+
+            var content = new MemoryStream(Convert.FromBase64String(cached.Body));
+
+            var streamContent = new StreamContent(content);
+
+            foreach (var header in cached.ContentHeaders)
+            {
+                streamContent.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            return new DownstreamResponse(streamContent, cached.StatusCode, cached.Headers.ToList(), cached.ReasonPhrase);
+        }
+
+        internal async Task<CachedResponse> CreateCachedResponse(DownstreamResponse response)
+        {
+            if (response == null)
+            {
+                return null;
+            }
+
+            var statusCode = response.StatusCode;
+            var headers = response.Headers.ToDictionary(v => v.Key, v => v.Values);
+            string body = null;
+
+            if (response.Content != null)
+            {
+                var content = await response.Content.ReadAsByteArrayAsync();
+                body = Convert.ToBase64String(content);
+            }
+
+            var contentHeaders = response?.Content?.Headers.ToDictionary(v => v.Key, v => v.Value);
+
+            var cached = new CachedResponse(statusCode, headers, body, contentHeaders, response.ReasonPhrase);
+            return cached;
         }
     }
 }

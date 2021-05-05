@@ -1,11 +1,7 @@
-﻿using Microsoft.AspNetCore.Builder;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-
-namespace Ocelot.RateLimit.Middleware
+﻿namespace Ocelot.RateLimit.Middleware
 {
+    using Microsoft.AspNetCore.Builder;
+
     public static class RateLimitMiddlewareExtensions
     {
         public static IApplicationBuilder UseRateLimiting(this IApplicationBuilder builder)

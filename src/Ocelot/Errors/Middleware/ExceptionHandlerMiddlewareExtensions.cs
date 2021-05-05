@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Builder;
+using Ocelot.Middleware;
 
 namespace Ocelot.Errors.Middleware
 {

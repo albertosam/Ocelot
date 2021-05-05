@@ -1,83 +1,57 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Net.Http;
-using System.Threading.Tasks;
-using Ocelot.Configuration;
-using Ocelot.Logging;
-using Ocelot.Responses;
-using Polly.CircuitBreaker;
-using Polly.Timeout;
-
 namespace Ocelot.Requester
 {
+    using Ocelot.Configuration;
+    using Microsoft.AspNetCore.Http;
+    using Ocelot.Logging;
+    using Ocelot.Middleware;
+    using Ocelot.Responses;
+    using System;
+    using System.Net.Http;
+    using System.Threading.Tasks;
+    using Ocelot.DownstreamRouteFinder.Middleware;
+
     public class HttpClientHttpRequester : IHttpRequester
     {
         private readonly IHttpClientCache _cacheHandlers;
         private readonly IOcelotLogger _logger;
+        private readonly IDelegatingHandlerHandlerFactory _factory;
+        private readonly IExceptionToErrorMapper _mapper;
 
-        public HttpClientHttpRequester(IOcelotLoggerFactory loggerFactory, 
-            IHttpClientCache cacheHandlers)
+        public HttpClientHttpRequester(IOcelotLoggerFactory loggerFactory,
+            IHttpClientCache cacheHandlers,
+            IDelegatingHandlerHandlerFactory factory,
+            IExceptionToErrorMapper mapper)
         {
             _logger = loggerFactory.CreateLogger<HttpClientHttpRequester>();
             _cacheHandlers = cacheHandlers;
+            _factory = factory;
+            _mapper = mapper;
         }
 
-        public async Task<Response<HttpResponseMessage>> GetResponse(Request.Request request)
+        public async Task<Response<HttpResponseMessage>> GetResponse(HttpContext httpContext)
         {
-            var builder = new HttpClientBuilder();
+            var builder = new HttpClientBuilder(_factory, _cacheHandlers, _logger);
 
-            var cacheKey = GetCacheKey(request, builder);
-            
-            var httpClient = GetHttpClient(cacheKey, builder, request.UseCookieContainer, request.AllowAutoRedirect);
+            var downstreamRoute = httpContext.Items.DownstreamRoute();
+
+            var downstreamRequest = httpContext.Items.DownstreamRequest();
+
+            var httpClient = builder.Create(downstreamRoute);
 
             try
             {
-                var response = await httpClient.SendAsync(request.HttpRequestMessage);
+                var response = await httpClient.SendAsync(downstreamRequest.ToHttpRequestMessage(), httpContext.RequestAborted);
                 return new OkResponse<HttpResponseMessage>(response);
-            }
-            catch (TimeoutRejectedException exception)
-            {
-                return
-                    new ErrorResponse<HttpResponseMessage>(new RequestTimedOutError(exception));
-            }
-            catch (BrokenCircuitException exception)
-            {
-                return
-                    new ErrorResponse<HttpResponseMessage>(new RequestTimedOutError(exception));
             }
             catch (Exception exception)
             {
-                return new ErrorResponse<HttpResponseMessage>(new UnableToCompleteRequestError(exception));
+                var error = _mapper.Map(exception);
+                return new ErrorResponse<HttpResponseMessage>(error);
             }
             finally
             {
-                _cacheHandlers.Set(cacheKey, httpClient, TimeSpan.FromHours(24));
+                builder.Save();
             }
-
-        }
-
-        private IHttpClient GetHttpClient(string cacheKey, IHttpClientBuilder builder, bool useCookieContainer, bool allowAutoRedirect)
-        {
-            var httpClient = _cacheHandlers.Get(cacheKey);
-
-            if (httpClient == null)
-            {
-                httpClient = builder.Create(useCookieContainer, allowAutoRedirect);
-            }
-            return httpClient;
-        }
-
-        private string GetCacheKey(Request.Request request, IHttpClientBuilder builder)
-        {
-            string baseUrl = $"{request.HttpRequestMessage.RequestUri.Scheme}://{request.HttpRequestMessage.RequestUri.Authority}";
-
-            if (request.IsQos)
-            {
-                builder.WithQos(request.QosProvider, _logger);
-                baseUrl = $"{baseUrl}{request.QosProvider.CircuitBreaker.CircuitBreakerPolicy.PolicyKey}";
-            }
-           
-            return baseUrl;
         }
     }
 }

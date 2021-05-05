@@ -1,45 +1,58 @@
-﻿using System;
-using System.Threading.Tasks;
+﻿using Moq;
+using Ocelot.Configuration;
+using Ocelot.Configuration.Builder;
 using Ocelot.LoadBalancer.LoadBalancers;
+using Ocelot.Middleware;
 using Ocelot.Responses;
 using Ocelot.Values;
 using Shouldly;
+using System;
+using System.Threading.Tasks;
 using TestStack.BDDfy;
 using Xunit;
 
 namespace Ocelot.UnitTests.LoadBalancer
 {
+    using Microsoft.AspNetCore.Http;
+
     public class LoadBalancerHouseTests
     {
+        private DownstreamRoute _route;
         private ILoadBalancer _loadBalancer;
         private readonly LoadBalancerHouse _loadBalancerHouse;
-        private Response _addResult;
         private Response<ILoadBalancer> _getResult;
-        private string _key;
+        private readonly Mock<ILoadBalancerFactory> _factory;
+        private readonly ServiceProviderConfiguration _serviceProviderConfig;
 
         public LoadBalancerHouseTests()
         {
-            _loadBalancerHouse = new LoadBalancerHouse();
+            _factory = new Mock<ILoadBalancerFactory>();
+            _loadBalancerHouse = new LoadBalancerHouse(_factory.Object);
+            _serviceProviderConfig = new ServiceProviderConfiguration("myType", "myScheme", "myHost", 123, string.Empty, "configKey", 0);
         }
 
         [Fact]
-        public void should_store_load_balancer()
+        public void should_store_load_balancer_on_first_request()
         {
-            var key = "test";
+            var route = new DownstreamRouteBuilder()
+                .WithLoadBalancerKey("test")
+                .Build();
 
-            this.Given(x => x.GivenThereIsALoadBalancer(key, new FakeLoadBalancer()))
-                .When(x => x.WhenIAddTheLoadBalancer())
+            this.Given(x => x.GivenThereIsALoadBalancer(route, new FakeLoadBalancer()))
                 .Then(x => x.ThenItIsAdded())
                 .BDDfy();
         }
 
         [Fact]
-        public void should_get_load_balancer()
+        public void should_not_store_load_balancer_on_second_request()
         {
-            var key = "test";
+            var route = new DownstreamRouteBuilder()
+                .WithLoadBalancerOptions(new LoadBalancerOptions("FakeLoadBalancer", "", 0))
+                .WithLoadBalancerKey("test")
+                .Build();
 
-            this.Given(x => x.GivenThereIsALoadBalancer(key, new FakeLoadBalancer()))
-                .When(x => x.WhenWeGetTheLoadBalancer(key))
+            this.Given(x => x.GivenThereIsALoadBalancer(route, new FakeLoadBalancer()))
+                .When(x => x.WhenWeGetTheLoadBalancer(route))
                 .Then(x => x.ThenItIsReturned())
                 .BDDfy();
         }
@@ -47,27 +60,64 @@ namespace Ocelot.UnitTests.LoadBalancer
         [Fact]
         public void should_store_load_balancers_by_key()
         {
-            var key = "test";
-            var keyTwo = "testTwo";
+            var route = new DownstreamRouteBuilder()
+                .WithLoadBalancerOptions(new LoadBalancerOptions("FakeLoadBalancer", "", 0))
+                .WithLoadBalancerKey("test")
+                .Build();
 
-            this.Given(x => x.GivenThereIsALoadBalancer(key, new FakeLoadBalancer()))
-                .And(x => x.GivenThereIsALoadBalancer(keyTwo, new FakeRoundRobinLoadBalancer()))
-                .When(x => x.WhenWeGetTheLoadBalancer(key))
+            var routeTwo = new DownstreamRouteBuilder()
+                .WithLoadBalancerOptions(new LoadBalancerOptions("FakeRoundRobinLoadBalancer", "", 0))
+                .WithLoadBalancerKey("testtwo")
+                .Build();
+
+            this.Given(x => x.GivenThereIsALoadBalancer(route, new FakeLoadBalancer()))
+                .And(x => x.GivenThereIsALoadBalancer(routeTwo, new FakeRoundRobinLoadBalancer()))
+                .When(x => x.WhenWeGetTheLoadBalancer(route))
                 .Then(x => x.ThenTheLoadBalancerIs<FakeLoadBalancer>())
-                .When(x => x.WhenWeGetTheLoadBalancer(keyTwo))
+                .When(x => x.WhenWeGetTheLoadBalancer(routeTwo))
                 .Then(x => x.ThenTheLoadBalancerIs<FakeRoundRobinLoadBalancer>())
                 .BDDfy();
         }
 
         [Fact]
-        public void should_return_error_if_no_load_balancer_with_key()
+        public void should_return_error_if_exception()
         {
-            this.When(x => x.WhenWeGetTheLoadBalancer("test"))
+            var route = new DownstreamRouteBuilder().Build();
+
+            this.When(x => x.WhenWeGetTheLoadBalancer(route))
             .Then(x => x.ThenAnErrorIsReturned())
             .BDDfy();
         }
 
-         private void ThenAnErrorIsReturned()
+        [Fact]
+        public void should_get_new_load_balancer_if_route_load_balancer_has_changed()
+        {
+            var route = new DownstreamRouteBuilder()
+                .WithLoadBalancerOptions(new LoadBalancerOptions("FakeLoadBalancer", "", 0))
+                .WithLoadBalancerKey("test")
+                .Build();
+
+            var routeTwo = new DownstreamRouteBuilder()
+                .WithLoadBalancerOptions(new LoadBalancerOptions("LeastConnection", "", 0))
+                .WithLoadBalancerKey("test")
+                .Build();
+
+            this.Given(x => x.GivenThereIsALoadBalancer(route, new FakeLoadBalancer()))
+                .When(x => x.WhenWeGetTheLoadBalancer(route))
+                .Then(x => x.ThenTheLoadBalancerIs<FakeLoadBalancer>())
+                .When(x => x.WhenIGetTheRouteWithTheSameKeyButDifferentLoadBalancer(routeTwo))
+                .Then(x => x.ThenTheLoadBalancerIs<LeastConnection>())
+                .BDDfy();
+        }
+
+        private void WhenIGetTheRouteWithTheSameKeyButDifferentLoadBalancer(DownstreamRoute route)
+        {
+            _route = route;
+            _factory.Setup(x => x.Get(_route, _serviceProviderConfig)).Returns(new OkResponse<ILoadBalancer>(new LeastConnection(null, null)));
+            _getResult = _loadBalancerHouse.Get(_route, _serviceProviderConfig);
+        }
+
+        private void ThenAnErrorIsReturned()
         {
             _getResult.IsError.ShouldBeTrue();
             _getResult.Errors[0].ShouldBeOfType<UnableToFindLoadBalancerError>();
@@ -80,54 +130,52 @@ namespace Ocelot.UnitTests.LoadBalancer
 
         private void ThenItIsAdded()
         {
-            _addResult.IsError.ShouldBe(false);
-            _addResult.ShouldBeOfType<OkResponse>();
+            _getResult.IsError.ShouldBe(false);
+            _getResult.ShouldBeOfType<OkResponse<ILoadBalancer>>();
+            _getResult.Data.ShouldBe(_loadBalancer);
+            _factory.Verify(x => x.Get(_route, _serviceProviderConfig), Times.Once);
         }
 
-        private void WhenIAddTheLoadBalancer()
+        private void GivenThereIsALoadBalancer(DownstreamRoute route, ILoadBalancer loadBalancer)
         {
-            _addResult = _loadBalancerHouse.Add(_key, _loadBalancer);
-        }
-
-
-        private void GivenThereIsALoadBalancer(string key, ILoadBalancer loadBalancer)
-        {
-            _key = key;
+            _route = route;
             _loadBalancer = loadBalancer;
-            WhenIAddTheLoadBalancer();
+            _factory.Setup(x => x.Get(_route, _serviceProviderConfig)).Returns(new OkResponse<ILoadBalancer>(loadBalancer));
+            _getResult = _loadBalancerHouse.Get(route, _serviceProviderConfig);
         }
 
-        private void WhenWeGetTheLoadBalancer(string key)
+        private void WhenWeGetTheLoadBalancer(DownstreamRoute route)
         {
-            _getResult = _loadBalancerHouse.Get(key);
+            _getResult = _loadBalancerHouse.Get(route, _serviceProviderConfig);
         }
 
         private void ThenItIsReturned()
         {
             _getResult.Data.ShouldBe(_loadBalancer);
+            _factory.Verify(x => x.Get(_route, _serviceProviderConfig), Times.Once);
         }
 
-        class FakeLoadBalancer : ILoadBalancer
+        private class FakeLoadBalancer : ILoadBalancer
         {
-            public Task<Response<HostAndPort>> Lease()
+            public Task<Response<ServiceHostAndPort>> Lease(HttpContext httpContext)
             {
                 throw new NotImplementedException();
             }
 
-            public void Release(HostAndPort hostAndPort)
+            public void Release(ServiceHostAndPort hostAndPort)
             {
                 throw new NotImplementedException();
             }
         }
 
-        class FakeRoundRobinLoadBalancer : ILoadBalancer
+        private class FakeRoundRobinLoadBalancer : ILoadBalancer
         {
-            public Task<Response<HostAndPort>> Lease()
+            public Task<Response<ServiceHostAndPort>> Lease(HttpContext httpContext)
             {
                 throw new NotImplementedException();
             }
 
-            public void Release(HostAndPort hostAndPort)
+            public void Release(ServiceHostAndPort hostAndPort)
             {
                 throw new NotImplementedException();
             }

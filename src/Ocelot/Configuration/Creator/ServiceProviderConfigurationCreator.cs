@@ -5,22 +5,27 @@ namespace Ocelot.Configuration.Creator
 {
     public class ServiceProviderConfigurationCreator : IServiceProviderConfigurationCreator
     {
-        public ServiceProviderConfiguration Create(FileReRoute fileReRoute, FileGlobalConfiguration globalConfiguration)
+        public ServiceProviderConfiguration Create(FileGlobalConfiguration globalConfiguration)
         {
-            var useServiceDiscovery = !string.IsNullOrEmpty(fileReRoute.ServiceName)
-                && !string.IsNullOrEmpty(globalConfiguration?.ServiceDiscoveryProvider?.Provider);
-
-            var serviceProviderPort = globalConfiguration?.ServiceDiscoveryProvider?.Port ?? 0;
+            var port = globalConfiguration?.ServiceDiscoveryProvider?.Port ?? 0;
+            var scheme = globalConfiguration?.ServiceDiscoveryProvider?.Scheme ?? "http";
+            var host = globalConfiguration?.ServiceDiscoveryProvider?.Host ?? "localhost";
+            var type = !string.IsNullOrEmpty(globalConfiguration?.ServiceDiscoveryProvider?.Type)
+                ? globalConfiguration?.ServiceDiscoveryProvider?.Type
+                : "consul";
+            var pollingInterval = globalConfiguration?.ServiceDiscoveryProvider?.PollingInterval ?? 0;
+            var k8snamespace = globalConfiguration?.ServiceDiscoveryProvider?.Namespace ?? string.Empty;
 
             return new ServiceProviderConfigurationBuilder()
-                    .WithServiceName(fileReRoute.ServiceName)
-                    .WithDownstreamHost(fileReRoute.DownstreamHost)
-                    .WithDownstreamPort(fileReRoute.DownstreamPort)
-                    .WithUseServiceDiscovery(useServiceDiscovery)
-                    .WithServiceDiscoveryProvider(globalConfiguration?.ServiceDiscoveryProvider?.Provider)
-                    .WithServiceDiscoveryProviderHost(globalConfiguration?.ServiceDiscoveryProvider?.Host)
-                    .WithServiceDiscoveryProviderPort(serviceProviderPort)
-                    .Build();
+                .WithScheme(scheme)
+                .WithHost(host)
+                .WithPort(port)
+                .WithType(type)
+                .WithToken(globalConfiguration?.ServiceDiscoveryProvider?.Token)
+                .WithConfigurationKey(globalConfiguration?.ServiceDiscoveryProvider?.ConfigurationKey)
+                .WithPollingInterval(pollingInterval)
+                .WithNamespace(k8snamespace)
+                .Build();
         }
     }
 }

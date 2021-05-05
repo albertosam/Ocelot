@@ -1,9 +1,10 @@
-using System.Collections.Generic;
 using Ocelot.Values;
 using Shouldly;
+using System.Collections.Generic;
 using TestStack.BDDfy;
 using Xunit;
 
+// nothing in use
 namespace Ocelot.UnitTests.ServiceDiscovery
 {
     public class ServiceRegistryTests
@@ -51,13 +52,13 @@ namespace Ocelot.UnitTests.ServiceDiscovery
 
         private void GivenAServiceIsRegistered(string name, string address, int port)
         {
-            _service = new Service(name, new HostAndPort(address, port), string.Empty, string.Empty, new string[0]);
+            _service = new Service(name, new ServiceHostAndPort(address, port), string.Empty, string.Empty, new string[0]);
             _serviceRepository.Set(_service);
         }
 
         private void GivenAServiceToRegister(string name, string address, int port)
         {
-            _service = new Service(name, new HostAndPort(address, port), string.Empty, string.Empty, new string[0]);
+            _service = new Service(name, new ServiceHostAndPort(address, port), string.Empty, string.Empty, new string[0]);
         }
 
         private void WhenIRegisterTheService()
@@ -77,16 +78,18 @@ namespace Ocelot.UnitTests.ServiceDiscovery
     public interface IServiceRegistry
     {
         void Register(Service serviceNameAndAddress);
+
         List<Service> Lookup(string name);
     }
 
     public class ServiceRegistry : IServiceRegistry
     {
         private readonly IServiceRepository _repository;
+
         public ServiceRegistry(IServiceRepository repository)
         {
             _repository = repository;
-        }   
+        }
 
         public void Register(Service serviceNameAndAddress)
         {
@@ -102,6 +105,7 @@ namespace Ocelot.UnitTests.ServiceDiscovery
     public interface IServiceRepository
     {
         List<Service> Get(string serviceName);
+
         void Set(Service serviceNameAndAddress);
     }
 
@@ -122,16 +126,15 @@ namespace Ocelot.UnitTests.ServiceDiscovery
         public void Set(Service serviceNameAndAddress)
         {
             List<Service> services;
-            if(_registeredServices.TryGetValue(serviceNameAndAddress.Name, out services))
+            if (_registeredServices.TryGetValue(serviceNameAndAddress.Name, out services))
             {
                 services.Add(serviceNameAndAddress);
                 _registeredServices[serviceNameAndAddress.Name] = services;
             }
             else
-            {     
-                _registeredServices[serviceNameAndAddress.Name] = new List<Service>(){ serviceNameAndAddress };
+            {
+                _registeredServices[serviceNameAndAddress.Name] = new List<Service>() { serviceNameAndAddress };
             }
-            
         }
     }
 }

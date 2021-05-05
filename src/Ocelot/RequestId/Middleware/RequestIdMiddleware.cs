@@ -1,55 +1,64 @@
-using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Primitives;
-using Ocelot.Infrastructure.RequestData;
-using Ocelot.Logging;
-using Ocelot.Middleware;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Collections.Generic;
-
 namespace Ocelot.RequestId.Middleware
 {
+    using Microsoft.AspNetCore.Http;
+    using Ocelot.DownstreamRouteFinder.Middleware;
+    using Ocelot.Infrastructure.RequestData;
+    using Ocelot.Logging;
+    using Ocelot.Middleware;
+    using Ocelot.Request.Middleware;
+    using System.Collections.Generic;
+    using System.Linq;
+    using System.Net.Http.Headers;
+    using System.Threading.Tasks;
+
     public class RequestIdMiddleware : OcelotMiddleware
     {
         private readonly RequestDelegate _next;
-        private readonly IOcelotLogger _logger;
         private readonly IRequestScopedDataRepository _requestScopedDataRepository;
-
         public RequestIdMiddleware(RequestDelegate next,
             IOcelotLoggerFactory loggerFactory,
             IRequestScopedDataRepository requestScopedDataRepository)
-            : base(requestScopedDataRepository)
+                : base(loggerFactory.CreateLogger<RequestIdMiddleware>())
         {
             _next = next;
-            _logger = loggerFactory.CreateLogger<RequestIdMiddleware>();
             _requestScopedDataRepository = requestScopedDataRepository;
         }
 
-        public async Task Invoke(HttpContext context)
+        public async Task Invoke(HttpContext httpContext)
         {
-            SetOcelotRequestId(context);
-            await _next.Invoke(context);
+            SetOcelotRequestId(httpContext);
+            await _next.Invoke(httpContext);
         }
 
-        private void SetOcelotRequestId(HttpContext context)
+        private void SetOcelotRequestId(HttpContext httpContext)
         {
-            // if get request ID is set on upstream request then retrieve it
-            var key = DownstreamRoute.ReRoute.RequestIdKey ?? DefaultRequestIdKey.Value;
-            
-            StringValues upstreamRequestIds;
-            if (context.Request.Headers.TryGetValue(key, out upstreamRequestIds))
+            var downstreamRoute = httpContext.Items.DownstreamRoute();
+
+            var key = downstreamRoute.RequestIdKey ?? DefaultRequestIdKey.Value;
+
+            if (httpContext.Request.Headers.TryGetValue(key, out var upstreamRequestIds))
             {
-                context.TraceIdentifier = upstreamRequestIds.First();
+                httpContext.TraceIdentifier = upstreamRequestIds.First();
+
+                var previousRequestId = _requestScopedDataRepository.Get<string>("RequestId");
+                if (!previousRequestId.IsError && !string.IsNullOrEmpty(previousRequestId.Data) && previousRequestId.Data != httpContext.TraceIdentifier)
+                {
+                    _requestScopedDataRepository.Add("PreviousRequestId", previousRequestId.Data);
+                    _requestScopedDataRepository.Update("RequestId", httpContext.TraceIdentifier);
+                }
+                else
+                {
+                    _requestScopedDataRepository.Add("RequestId", httpContext.TraceIdentifier);
+                }
             }
 
-            // set request ID on downstream request, if required
-            var requestId = new RequestId(DownstreamRoute?.ReRoute?.RequestIdKey, context.TraceIdentifier);
+            var requestId = new RequestId(downstreamRoute.RequestIdKey, httpContext.TraceIdentifier);
 
-            if (ShouldAddRequestId(requestId, DownstreamRequest.Headers))
+            var downstreamRequest = httpContext.Items.DownstreamRequest();
+
+            if (ShouldAddRequestId(requestId, downstreamRequest.Headers))
             {
-                AddRequestIdHeader(requestId, DownstreamRequest);
+                AddRequestIdHeader(requestId, downstreamRequest);
             }
         }
 
@@ -66,7 +75,7 @@ namespace Ocelot.RequestId.Middleware
             return headers.TryGetValues(requestId.RequestIdKey, out value);
         }
 
-        private void AddRequestIdHeader(RequestId requestId, HttpRequestMessage httpRequestMessage)
+        private void AddRequestIdHeader(RequestId requestId, DownstreamRequest httpRequestMessage)
         {
             httpRequestMessage.Headers.Add(requestId.RequestIdKey, requestId.RequestIdValue);
         }

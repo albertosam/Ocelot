@@ -1,34 +1,66 @@
-using System.Collections.Generic;
-using Ocelot.Configuration;
-using Ocelot.Values;
-
 namespace Ocelot.ServiceDiscovery
 {
+    using Microsoft.Extensions.DependencyInjection;
+    using Ocelot.Configuration;
+    using Ocelot.Logging;
+    using Ocelot.Responses;
+    using Ocelot.ServiceDiscovery.Configuration;
+    using Ocelot.ServiceDiscovery.Providers;
+    using Ocelot.Values;
+    using System;
+    using System.Collections.Generic;
+
     public class ServiceDiscoveryProviderFactory : IServiceDiscoveryProviderFactory
     {
-        public  IServiceDiscoveryProvider Get(ServiceProviderConfiguration serviceConfig)
+        private readonly IOcelotLoggerFactory _factory;
+        private readonly ServiceDiscoveryFinderDelegate _delegates;
+        private readonly IServiceProvider _provider;
+
+        public ServiceDiscoveryProviderFactory(IOcelotLoggerFactory factory, IServiceProvider provider)
         {
-            if (serviceConfig.UseServiceDiscovery)
-            {
-                return GetServiceDiscoveryProvider(serviceConfig.ServiceName, serviceConfig.ServiceDiscoveryProvider, serviceConfig.ServiceProviderHost, serviceConfig.ServiceProviderPort);
-            }
-
-            var services = new List<Service>()
-            {
-                new Service(serviceConfig.ServiceName, 
-                new HostAndPort(serviceConfig.DownstreamHost, serviceConfig.DownstreamPort),
-                string.Empty, 
-                string.Empty, 
-                new string[0])
-            };
-
-            return new ConfigurationServiceProvider(services);
+            _factory = factory;
+            _provider = provider;
+            _delegates = provider.GetService<ServiceDiscoveryFinderDelegate>();
         }
 
-        private IServiceDiscoveryProvider GetServiceDiscoveryProvider(string serviceName, string serviceProviderName, string providerHostName, int providerPort)
+        public Response<IServiceDiscoveryProvider> Get(ServiceProviderConfiguration serviceConfig, DownstreamRoute route)
         {
-            var consulRegistryConfiguration = new ConsulRegistryConfiguration(providerHostName, providerPort, serviceName);
-            return new ConsulServiceDiscoveryProvider(consulRegistryConfiguration);
+            if (route.UseServiceDiscovery)
+            {
+                return GetServiceDiscoveryProvider(serviceConfig, route);
+            }
+
+            var services = new List<Service>();
+
+            foreach (var downstreamAddress in route.DownstreamAddresses)
+            {
+                var service = new Service(route.ServiceName, new ServiceHostAndPort(downstreamAddress.Host, downstreamAddress.Port, route.DownstreamScheme), string.Empty, string.Empty, new string[0]);
+
+                services.Add(service);
+            }
+
+            return new OkResponse<IServiceDiscoveryProvider>(new ConfigurationServiceProvider(services));
+        }
+
+        private Response<IServiceDiscoveryProvider> GetServiceDiscoveryProvider(ServiceProviderConfiguration config, DownstreamRoute route)
+        {
+            if (config.Type?.ToLower() == "servicefabric")
+            {
+                var sfConfig = new ServiceFabricConfiguration(config.Host, config.Port, route.ServiceName);
+                return new OkResponse<IServiceDiscoveryProvider>(new ServiceFabricServiceDiscoveryProvider(sfConfig));
+            }
+
+            if (_delegates != null)
+            {
+                var provider = _delegates?.Invoke(_provider, config, route);
+
+                if (provider.GetType().Name.ToLower() == config.Type.ToLower())
+                {
+                    return new OkResponse<IServiceDiscoveryProvider>(provider);
+                }
+            }
+
+            return new ErrorResponse<IServiceDiscoveryProvider>(new UnableToFindServiceDiscoveryProviderError($"Unable to find service discovery provider for type: {config.Type}"));
         }
     }
 }

@@ -1,40 +1,116 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
-using System.Threading.Tasks;
-using Ocelot.Logging;
-using Ocelot.Requester.QoS;
-
-namespace Ocelot.Requester
+﻿namespace Ocelot.Requester
 {
-    internal class HttpClientBuilder : IHttpClientBuilder
+    using Ocelot.Configuration;
+    using Ocelot.Logging;
+    using System;
+    using System.Linq;
+    using System.Net;
+    using System.Net.Http;
+
+    public class HttpClientBuilder : IHttpClientBuilder
     {
-        private readonly Dictionary<int, Func<DelegatingHandler>> _handlers = new Dictionary<int, Func<DelegatingHandler>>();
+        private readonly IDelegatingHandlerHandlerFactory _factory;
+        private readonly IHttpClientCache _cacheHandlers;
+        private readonly IOcelotLogger _logger;
+        private DownstreamRoute _cacheKey;
+        private HttpClient _httpClient;
+        private IHttpClient _client;
+        private readonly TimeSpan _defaultTimeout;
 
-        public  IHttpClientBuilder WithQos(IQoSProvider qosProvider, IOcelotLogger logger)
+        public HttpClientBuilder(
+            IDelegatingHandlerHandlerFactory factory,
+            IHttpClientCache cacheHandlers,
+            IOcelotLogger logger)
         {
-            _handlers.Add(5000, () => new PollyCircuitBreakingDelegatingHandler(qosProvider, logger));
+            _factory = factory;
+            _cacheHandlers = cacheHandlers;
+            _logger = logger;
 
-            return this;
-        }  
-
-        public IHttpClient Create(bool useCookies, bool allowAutoRedirect)
-        {
-            var httpclientHandler = new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect, UseCookies = useCookies};
-            
-            var client = new HttpClient(CreateHttpMessageHandler(httpclientHandler));                
-            
-            return new HttpClientWrapper(client);
+            // This is hardcoded at the moment but can easily be added to configuration
+            // if required by a user request.
+            _defaultTimeout = TimeSpan.FromSeconds(90);
         }
 
-        private HttpMessageHandler CreateHttpMessageHandler(HttpMessageHandler httpMessageHandler)
-        {            
-   
-            _handlers
-                .OrderByDescending(handler => handler.Key)
-                .Select(handler => handler.Value)
+        public IHttpClient Create(DownstreamRoute downstreamRoute)
+        {
+            _cacheKey = downstreamRoute;
+
+            var httpClient = _cacheHandlers.Get(_cacheKey);
+
+            if (httpClient != null)
+            {
+                _client = httpClient;
+                return httpClient;
+            }
+
+            var handler = CreateHandler(downstreamRoute);
+
+            if (downstreamRoute.DangerousAcceptAnyServerCertificateValidator)
+            {
+                handler.ServerCertificateCustomValidationCallback = (request, certificate, chain, errors) => true;
+
+                _logger
+                    .LogWarning($"You have ignored all SSL warnings by using DangerousAcceptAnyServerCertificateValidator for this DownstreamRoute, UpstreamPathTemplate: {downstreamRoute.UpstreamPathTemplate}, DownstreamPathTemplate: {downstreamRoute.DownstreamPathTemplate}");
+            }
+
+            var timeout = downstreamRoute.QosOptions.TimeoutValue == 0
+                ? _defaultTimeout
+                : TimeSpan.FromMilliseconds(downstreamRoute.QosOptions.TimeoutValue);
+
+            _httpClient = new HttpClient(CreateHttpMessageHandler(handler, downstreamRoute))
+            {
+                Timeout = timeout
+            };
+
+            _client = new HttpClientWrapper(_httpClient);
+
+            return _client;
+        }
+
+        private HttpClientHandler CreateHandler(DownstreamRoute downstreamRoute)
+        {
+            // Dont' create the CookieContainer if UseCookies is not set or the HttpClient will complain
+            // under .Net Full Framework
+            var useCookies = downstreamRoute.HttpHandlerOptions.UseCookieContainer;
+
+            return useCookies ? UseCookiesHandler(downstreamRoute) : UseNonCookiesHandler(downstreamRoute);
+        }
+
+        private HttpClientHandler UseNonCookiesHandler(DownstreamRoute downstreamRoute)
+        {
+            return new HttpClientHandler
+            {
+                AllowAutoRedirect = downstreamRoute.HttpHandlerOptions.AllowAutoRedirect,
+                UseCookies = downstreamRoute.HttpHandlerOptions.UseCookieContainer,
+                UseProxy = downstreamRoute.HttpHandlerOptions.UseProxy,
+                MaxConnectionsPerServer = downstreamRoute.HttpHandlerOptions.MaxConnectionsPerServer,
+            };
+        }
+
+        private HttpClientHandler UseCookiesHandler(DownstreamRoute downstreamRoute)
+        {
+            return new HttpClientHandler
+            {
+                AllowAutoRedirect = downstreamRoute.HttpHandlerOptions.AllowAutoRedirect,
+                UseCookies = downstreamRoute.HttpHandlerOptions.UseCookieContainer,
+                UseProxy = downstreamRoute.HttpHandlerOptions.UseProxy,
+                MaxConnectionsPerServer = downstreamRoute.HttpHandlerOptions.MaxConnectionsPerServer,
+                CookieContainer = new CookieContainer(),
+            };
+        }
+
+        public void Save()
+        {
+            _cacheHandlers.Set(_cacheKey, _client, TimeSpan.FromHours(24));
+        }
+
+        private HttpMessageHandler CreateHttpMessageHandler(HttpMessageHandler httpMessageHandler, DownstreamRoute request)
+        {
+            //todo handle error
+            var handlers = _factory.Get(request).Data;
+
+            handlers
+                .Select(handler => handler)
                 .Reverse()
                 .ToList()
                 .ForEach(handler =>
@@ -44,24 +120,6 @@ namespace Ocelot.Requester
                     httpMessageHandler = delegatingHandler;
                 });
             return httpMessageHandler;
-        }
-    }
-
-    /// <summary>
-    /// This class was made to make unit testing easier when HttpClient is used.
-    /// </summary>
-    internal class HttpClientWrapper : IHttpClient
-    {
-        public HttpClient Client { get; }
-
-        public HttpClientWrapper(HttpClient client)
-        {
-            Client = client;
-        }
-
-        public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
-        {
-            return Client.SendAsync(request);
         }
     }
 }

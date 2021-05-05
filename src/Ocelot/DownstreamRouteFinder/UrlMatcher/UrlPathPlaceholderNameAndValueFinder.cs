@@ -1,50 +1,113 @@
-using System.Collections.Generic;
 using Ocelot.Responses;
+using System.Collections.Generic;
 
 namespace Ocelot.DownstreamRouteFinder.UrlMatcher
 {
-    public class UrlPathPlaceholderNameAndValueFinder : IUrlPathPlaceholderNameAndValueFinder
+    public class UrlPathPlaceholderNameAndValueFinder : IPlaceholderNameAndValueFinder
     {
-        public Response<List<UrlPathPlaceholderNameAndValue>> Find(string upstreamUrlPath, string upstreamUrlPathTemplate)
+        public Response<List<PlaceholderNameAndValue>> Find(string path, string query, string pathTemplate)
         {
-            var templateKeysAndValues = new List<UrlPathPlaceholderNameAndValue>();
+            var placeHolderNameAndValues = new List<PlaceholderNameAndValue>();
 
-            int counterForUrl = 0;
-         
-            for (int counterForTemplate = 0; counterForTemplate < upstreamUrlPathTemplate.Length; counterForTemplate++)
+            path = $"{path}{query}";
+
+            int counterForPath = 0;
+
+            var delimiter = '/';
+            var nextDelimiter = '/';
+
+            for (int counterForTemplate = 0; counterForTemplate < pathTemplate.Length; counterForTemplate++)
             {
-                if (CharactersDontMatch(upstreamUrlPathTemplate[counterForTemplate], upstreamUrlPath[counterForUrl]) && ContinueScanningUrl(counterForUrl,upstreamUrlPath.Length))
+                if ((path.Length > counterForPath) && CharactersDontMatch(pathTemplate[counterForTemplate], path[counterForPath]) && ContinueScanningUrl(counterForPath, path.Length))
                 {
-                    if (IsPlaceholder(upstreamUrlPathTemplate[counterForTemplate]))
+                    if (IsPlaceholder(pathTemplate[counterForTemplate]))
                     {
-                        var variableName = GetPlaceholderVariableName(upstreamUrlPathTemplate, counterForTemplate);
+                        //should_find_multiple_query_string make test pass
+                        if (PassedQueryString(pathTemplate, counterForTemplate))
+                        {
+                            delimiter = '&';
+                            nextDelimiter = '&';
+                        }
 
-                        var variableValue = GetPlaceholderVariableValue(upstreamUrlPathTemplate, variableName, upstreamUrlPath, counterForUrl);
+                        //should_find_multiple_query_string_and_path makes test pass
+                        if (NotPassedQueryString(pathTemplate, counterForTemplate) && NoMoreForwardSlash(pathTemplate, counterForTemplate))
+                        {
+                            delimiter = '?';
+                            nextDelimiter = '?';
+                        }
 
-                        var templateVariableNameAndValue = new UrlPathPlaceholderNameAndValue(variableName, variableValue);
+                        var placeholderName = GetPlaceholderName(pathTemplate, counterForTemplate);
 
-                        templateKeysAndValues.Add(templateVariableNameAndValue);
+                        var placeholderValue = GetPlaceholderValue(pathTemplate, query, placeholderName, path, counterForPath, delimiter);
 
-                        counterForTemplate = GetNextCounterPosition(upstreamUrlPathTemplate, counterForTemplate, '}');
+                        placeHolderNameAndValues.Add(new PlaceholderNameAndValue(placeholderName, placeholderValue));
 
-                        counterForUrl = GetNextCounterPosition(upstreamUrlPath, counterForUrl, '/');
+                        counterForTemplate = GetNextCounterPosition(pathTemplate, counterForTemplate, '}');
+
+                        counterForPath = GetNextCounterPosition(path, counterForPath, nextDelimiter);
 
                         continue;
                     }
 
-                    return new OkResponse<List<UrlPathPlaceholderNameAndValue>>(templateKeysAndValues);
+                    return new OkResponse<List<PlaceholderNameAndValue>>(placeHolderNameAndValues);
                 }
-                counterForUrl++;
+                else if (IsCatchAll(path, counterForPath, pathTemplate))
+                {
+                    var endOfPlaceholder = GetNextCounterPosition(pathTemplate, counterForTemplate, '}');
+
+                    var placeholderName = GetPlaceholderName(pathTemplate, 1);
+
+                    if (NothingAfterFirstForwardSlash(path))
+                    {
+                        placeHolderNameAndValues.Add(new PlaceholderNameAndValue(placeholderName, ""));
+                    }
+                    else
+                    {
+                        var placeholderValue = GetPlaceholderValue(pathTemplate, query, placeholderName, path, counterForPath + 1, '?');
+                        placeHolderNameAndValues.Add(new PlaceholderNameAndValue(placeholderName, placeholderValue));
+                    }
+
+                    counterForTemplate = endOfPlaceholder;
+                }
+
+                counterForPath++;
             }
 
-            return new OkResponse<List<UrlPathPlaceholderNameAndValue>>(templateKeysAndValues);
+            return new OkResponse<List<PlaceholderNameAndValue>>(placeHolderNameAndValues);
         }
 
-        private string GetPlaceholderVariableValue(string urlPathTemplate, string variableName, string urlPath, int counterForUrl)
+        private static bool NoMoreForwardSlash(string pathTemplate, int counterForTemplate)
         {
-            var positionOfNextSlash = urlPath.IndexOf('/', counterForUrl);
+            return !pathTemplate.Substring(counterForTemplate).Contains("/");
+        }
 
-            if (positionOfNextSlash == -1 || urlPathTemplate.Trim('/').EndsWith(variableName))
+        private static bool NotPassedQueryString(string pathTemplate, int counterForTemplate)
+        {
+            return !pathTemplate.Substring(0, counterForTemplate).Contains("?");
+        }
+
+        private static bool PassedQueryString(string pathTemplate, int counterForTemplate)
+        {
+            return pathTemplate.Substring(0, counterForTemplate).Contains("?");
+        }
+
+        private bool IsCatchAll(string path, int counterForPath, string pathTemplate)
+        {
+            return string.IsNullOrEmpty(path) || (path.Length > counterForPath && path[counterForPath] == '/') && pathTemplate.Length > 1
+                     && pathTemplate.Substring(0, 2) == "/{"
+                     && pathTemplate.IndexOf('}') == pathTemplate.Length - 1;
+        }
+
+        private bool NothingAfterFirstForwardSlash(string path)
+        {
+            return path.Length == 1 || path.Length == 0;
+        }
+
+        private string GetPlaceholderValue(string urlPathTemplate, string query, string variableName, string urlPath, int counterForUrl, char delimiter)
+        {
+            var positionOfNextSlash = urlPath.IndexOf(delimiter, counterForUrl);
+
+            if (positionOfNextSlash == -1 || (urlPathTemplate.Trim(delimiter).EndsWith(variableName) && string.IsNullOrEmpty(query)))
             {
                 positionOfNextSlash = urlPath.Length;
             }
@@ -54,7 +117,7 @@ namespace Ocelot.DownstreamRouteFinder.UrlMatcher
             return variableValue;
         }
 
-        private string GetPlaceholderVariableName(string urlPathTemplate, int counterForTemplate)
+        private string GetPlaceholderName(string urlPathTemplate, int counterForTemplate)
         {
             var postitionOfPlaceHolderClosingBracket = urlPathTemplate.IndexOf('}', counterForTemplate) + 1;
 
@@ -62,10 +125,11 @@ namespace Ocelot.DownstreamRouteFinder.UrlMatcher
 
             return variableName;
         }
+
         private int GetNextCounterPosition(string urlTemplate, int counterForTemplate, char delimiter)
-        {                        
+        {
             var closingPlaceHolderPositionOnTemplate = urlTemplate.IndexOf(delimiter, counterForTemplate);
-            return closingPlaceHolderPositionOnTemplate + 1; 
+            return closingPlaceHolderPositionOnTemplate + 1;
         }
 
         private bool CharactersDontMatch(char characterOne, char characterTwo)

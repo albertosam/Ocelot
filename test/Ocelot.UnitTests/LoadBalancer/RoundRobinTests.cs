@@ -1,31 +1,35 @@
-﻿using System.Collections.Generic;
-using System.Diagnostics;
+﻿using Microsoft.AspNetCore.Http;
 using Ocelot.LoadBalancer.LoadBalancers;
+using Ocelot.Middleware;
 using Ocelot.Responses;
 using Ocelot.Values;
 using Shouldly;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading.Tasks;
 using TestStack.BDDfy;
 using Xunit;
-using System.Threading.Tasks;
 
 namespace Ocelot.UnitTests.LoadBalancer
 {
     public class RoundRobinTests
     {
-        private readonly RoundRobinLoadBalancer _roundRobin;
+        private readonly RoundRobin _roundRobin;
         private readonly List<Service> _services;
-        private Response<HostAndPort> _hostAndPort;
+        private Response<ServiceHostAndPort> _hostAndPort;
+        private HttpContext _httpContext;
 
         public RoundRobinTests()
         {
+            _httpContext = new DefaultHttpContext();
             _services = new List<Service>
             {
-                new Service("product", new HostAndPort("127.0.0.1", 5000), string.Empty, string.Empty, new string[0]),
-                new Service("product", new HostAndPort("127.0.0.1", 5001), string.Empty, string.Empty, new string[0]),
-                new Service("product", new HostAndPort("127.0.0.1", 5001), string.Empty, string.Empty, new string[0])
+                new Service("product", new ServiceHostAndPort("127.0.0.1", 5000), string.Empty, string.Empty, new string[0]),
+                new Service("product", new ServiceHostAndPort("127.0.0.1", 5001), string.Empty, string.Empty, new string[0]),
+                new Service("product", new ServiceHostAndPort("127.0.0.1", 5001), string.Empty, string.Empty, new string[0])
             };
 
-            _roundRobin = new RoundRobinLoadBalancer(() => Task.FromResult(_services));
+            _roundRobin = new RoundRobin(() => Task.FromResult(_services));
         }
 
         [Fact]
@@ -47,18 +51,18 @@ namespace Ocelot.UnitTests.LoadBalancer
 
             while (stopWatch.ElapsedMilliseconds < 1000)
             {
-                var address = _roundRobin.Lease().Result;
+                var address = _roundRobin.Lease(_httpContext).Result;
                 address.Data.ShouldBe(_services[0].HostAndPort);
-                address = _roundRobin.Lease().Result;
+                address = _roundRobin.Lease(_httpContext).Result;
                 address.Data.ShouldBe(_services[1].HostAndPort);
-                address = _roundRobin.Lease().Result;
+                address = _roundRobin.Lease(_httpContext).Result;
                 address.Data.ShouldBe(_services[2].HostAndPort);
             }
         }
 
         private void GivenIGetTheNextAddress()
         {
-            _hostAndPort = _roundRobin.Lease().Result;
+            _hostAndPort = _roundRobin.Lease(_httpContext).Result;
         }
 
         private void ThenTheNextAddressIndexIs(int index)
